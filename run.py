@@ -6,6 +6,8 @@ import re
 import urllib.request
 import simplejson as json
 from operator import itemgetter
+from fuzzywuzzy import fuzz
+import time
 # import codecs
 
 # v0.01
@@ -17,44 +19,47 @@ from operator import itemgetter
 
 
 # if want to go fuzzy string match database route
-
 # def set_database(path):
 #     f = codecs.open(path, 'r', 'utf-8')
 #     choices = f.readlines()
 #     return choices
+#
 
-def regex_match(s):
-    result = re.match(r'(.*)-(.*)',str(s)).groups()
-    artist = result[0].rstrip().lstrip().lower()
-    title = result[1].lstrip().rstrip().replace(' ','+')
-    return artist, title
+results = []
+
+def regex_match(i):
+    global results
+    SongTuple = namedtuple('SongTuple', 'artist title')
+    for x in i.splitlines():
+        try:
+            x = re.sub(r'(\(http.*\))', '', str(x))
+            x = re.sub(r'(?!-|\s|,)\W','', str(x))
+            result = re.match(r'(?!\[|\])(.*)?\s*-\s*((?:\b\w*\s?)+)',str(x)).groups()
+            artist = result[0].rstrip().lstrip().lower().replace(' ','+')
+            title = result[1].lstrip().rstrip().lower().replace(' ','+')
+            try:
+                results.append(get_spotify_id(SongTuple(artist,title)))
+            except ValueError:
+                try:
+                    artist = result[1].rstrip().lstrip().lower().replace(' ','+')
+                    title = result[0].lstrip().rstrip().lower().replace(' ','+')
+                    results.append(get_spotify_id(SongTuple(artist,title)))
+                except ValueError:
+                    pass
+        except:
+            pass
 
 
 def thread_parser(uid):
-    results = []
-    SongTuple = namedtuple('SongTuple', 'artist title')
-    if len(uid) < 10:
-        uid = "'%s'"%uid
-        utype = 'submission_id='
-    else:
-        utype=''
     r = praw.Reddit('user-agent')
-    submission = r.get_submission(utype+uid)
-    if utype == '':
-        comment = submission.comments[0]
-        try:
-            artist, title = regex_match(str(comment))
-            results.append(SongTuple(artist,title))
-        except:
-            pass
-    else:
+    if len(uid) < 10:
+        submission = r.get_submission(submission_id=uid)
         flat_comments = praw.helpers.flatten_tree(submission.comments)
         already_done = set()
         for comment in flat_comments:
             if comment.id not in already_done:
                 try:
-                    artist,title = regex_match(str(comment))
-                    results.append(SongTuple(artist,title))
+                    regex_match(str(comment.body))
                 except:
                     pass
                 already_done.add(comment.id)
@@ -80,24 +85,42 @@ def file_parser(path):
 def get_spotify_id(t):
     artist = t[0]
     track = t[1]
-    url ="https://api.spotify.com/v1/search?q=%s&type=track&market=US" % (track)
+    url ="https://api.spotify.com/v1/search?q=%s+artist:%s&type=track&market=US&" % (track, artist)
     r = urllib.request.urlopen(url)
     data = json.load(r)
     PopId = namedtuple('PopId', 'pop spotify_id')
     popid_list = []
     for i in range(0, len(data["tracks"]["items"])):
-        if data["tracks"]["items"][i]["artists"][0]['name'].lower() == artist:
-            popid_list.append(PopId(data["tracks"]["items"][i]["popularity"], data["tracks"]["items"][i]["uri"]))
-    return max(popid_list,key=itemgetter(0))[1]
+        if fuzz.ratio(artist, data["tracks"]["items"][i]["artists"][0]["name"].lower()) > 60:
+            if fuzz.ratio(track, data["tracks"]["items"][i]["name"].lower()) >= 60:
+                s_id = data["tracks"]["items"][i]["id"]
+                return s_id
+    raise ValueError('track not found')
+
+def print_playlist(a):
+    Song = namedtuple('Song', 'artist title')
+    songlist = []
+    for i in a:
+        try:
+            url ="https://api.spotify.com/v1/tracks/%s" % (i)
+            r = urllib.request.urlopen(url)
+            data = json.load(r)
+            print(Song(data["artists"][0]["name"], data["name"]))
+        except:
+            pass
+
+def other_test():
+    r = praw.Reddit('user-agent')
+    submission = r.get_submission(url='https://www.reddit.com/r/indieheads/comments/4nuqcn/my_best_friend_was_murdered_in_the_orlando/d47eray')
+    s = submission.comments[0]
+    result = regex_match(s.body)
+
 
 
 def test():
     songlist = []
-    # results = thread_parser('https://www.reddit.com/r/indieheads/comments/4nuqcn/my_best_friend_was_murdered_in_the_orlando/d4736ss')
-    results = thread_parser('4nuqcn')
-    for result in results:
-         songlist.append(get_spotify_id(result))
-    print(songlist)
+    thread_parser('4nuqcn')
+    print_playlist(results)
 
 # def main():
 #     # playlist goes here
@@ -112,5 +135,7 @@ def test():
 
 
 if __name__ == '__main__':
+    # other_test()
     test()
+    # regex_test()
     # main()
