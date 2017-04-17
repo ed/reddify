@@ -1,141 +1,137 @@
-# import playlist
-# import songs
+import playlist
+import user
 import praw
-from collections import namedtuple
 import re
-import urllib.request
+import requests
 import simplejson as json
-from operator import itemgetter
 from fuzzywuzzy import fuzz
-import time
-# import codecs
-
-# v0.01
-
-# API STUFF
-# TOKEN GOES HERE
-# REQUEST ONE AT SPOTIFY WEB API
-# https://developer.spotify.com/web-api/console/get-several-albums/
-
-
-# if want to go fuzzy string match database route
-# def set_database(path):
-#     f = codecs.open(path, 'r', 'utf-8')
-#     choices = f.readlines()
-#     return choices
-#
-
-results = []
-
-def regex_match(i):
-    global results
-    SongTuple = namedtuple('SongTuple', 'artist title')
-    for x in i.splitlines():
-        try:
-            x = re.sub(r'(\(http.*\))', '', str(x))
-            x = re.sub(r'(?!-|\s|,)\W','', str(x))
-            result = re.match(r'(?!\[|\])(.*)?\s*-\s*((?:\b\w*\s?)+)',str(x)).groups()
-            artist = result[0].rstrip().lstrip().lower().replace(' ','+')
-            title = result[1].lstrip().rstrip().lower().replace(' ','+')
-            try:
-                results.append(get_spotify_id(SongTuple(artist,title)))
-            except ValueError:
-                try:
-                    artist = result[1].rstrip().lstrip().lower().replace(' ','+')
-                    title = result[0].lstrip().rstrip().lower().replace(' ','+')
-                    results.append(get_spotify_id(SongTuple(artist,title)))
-                except ValueError:
-                    pass
-        except:
-            pass
-
-
-def thread_parser(uid):
-    r = praw.Reddit('user-agent')
-    if len(uid) < 10:
-        submission = r.get_submission(submission_id=uid)
-        flat_comments = praw.helpers.flatten_tree(submission.comments)
-        already_done = set()
-        for comment in flat_comments:
-            if comment.id not in already_done:
-                try:
-                    regex_match(str(comment.body))
-                except:
-                    pass
-                already_done.add(comment.id)
-    return results
-
-
-
-def file_parser(path):
-    results = []
-    SongTuple = namedtuple('SongTuple', 'artist title')
-    with open(path, "r") as f:
-        for line in f:
-            try:
-                result = re.match('(.*)-(.*)',str(comment)).groups()
-                artist = result[0].rstrip().lstrip().lower()
-                title = result[1].lstrip().rstrip().replace(' ','+')
-                results.append(SongTuple(artist,title))
-            except:
-                pass
-    return results
+from functools import partial
+import sys
+import multiprocessing
+import math
 
 
 def get_spotify_id(t):
     artist = t[0]
     track = t[1]
-    url ="https://api.spotify.com/v1/search?q=%s+artist:%s&type=track&market=US&" % (track, artist)
-    r = urllib.request.urlopen(url)
-    data = json.load(r)
-    PopId = namedtuple('PopId', 'pop spotify_id')
-    popid_list = []
-    for i in range(0, len(data["tracks"]["items"])):
-        if fuzz.ratio(artist, data["tracks"]["items"][i]["artists"][0]["name"].lower()) > 60:
-            if fuzz.ratio(track, data["tracks"]["items"][i]["name"].lower()) >= 60:
-                s_id = data["tracks"]["items"][i]["id"]
-                return s_id
+    url = "https://api.spotify.com/v1/search?q=%s+artist:%s&type=track&market=US&" % (track, artist)
+    r = requests.get(url)
+    data = json.loads(r.text)
+    if 'tracks' in data:
+        for i in range(0, len(data["tracks"]["items"])):
+            if fuzz.ratio(artist, data["tracks"]["items"][i]["artists"][0]["name"].lower()) > 60:
+                if fuzz.ratio(track, data["tracks"]["items"][i]["name"].lower()) >= 60:
+                    s_id = data["tracks"]["items"][i]["uri"]
+                    return s_id
     raise ValueError('track not found')
+    
 
-def print_playlist(a):
-    Song = namedtuple('Song', 'artist title')
-    songlist = []
-    for i in a:
+def fetch_comments(uid, client_id, client_secret):
+    res = []
+    r = praw.Reddit(user_agent = 'portify by /u/doveward',
+                    client_id = client_id,
+                    client_secret = client_secret)
+    r.read_only = True
+    submission = r.submission(id=uid)
+    submission.comments.replace_more(limit=0)
+    for comment in submission.comments.list():
+        matches = regex_match(comment.body.splitlines())
+        for match in matches:
+            res.append(match.groups())
+    return res
+
+
+def regex_match(lis):
+    res = [re.sub(r'(\(http.*\))', '', str(x)) for x in lis]
+    res = [re.sub(r'(?!-|\s|,)\W','', str(x)) for x in res]
+    res = [re.match(r'(?!\[|\])(.*)?\s*(?:-|by)\s*((?:\b\w*\s?)+)', str(x)) for x in res]
+    res = filter(None, res)
+    return res
+
+
+def string_strip(s):
+    return s.rstrip().lstrip().lower().replace(' ','+')
+
+
+def song_helper(artist, song, q):
+    a = string_strip(artist)
+    s = string_strip(song)
+    try:
+        uri = get_spotify_id((a, s))
+        q.put(uri)
+    except ValueError:
         try:
-            url ="https://api.spotify.com/v1/tracks/%s" % (i)
-            r = urllib.request.urlopen(url)
-            data = json.load(r)
-            print(Song(data["artists"][0]["name"], data["name"]))
+            uri = get_spotify_id((s, a))
+            q.put(uri)
         except:
             pass
+    
 
-def other_test():
-    r = praw.Reddit('user-agent')
-    submission = r.get_submission(url='https://www.reddit.com/r/indieheads/comments/4nuqcn/my_best_friend_was_murdered_in_the_orlando/d47eray')
-    s = submission.comments[0]
-    result = regex_match(s.body)
-
-
-
-def test():
-    songlist = []
-    thread_parser('4nuqcn')
-    print_playlist(results)
-
-# def main():
-#     # playlist goes here
-#     scopes = 'playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private'
-#     account = 'foo'
-#     playlist_name = 'bar'
-#     token = "Bearer " + OAUTH_TOKEN
-#     p = Playlist(account, playlist_name, token)
-#     tracks = []
-#     tracks = ','.join(tracks)
-#     p.add_tracks(tracks)
+def parse(q, lis):
+    for res in lis:
+        if len(res[0]) > 40 or len(res[1]) > 40:
+            together = ''.join(res).split('-')
+            j = regex_match(together)
+            for k in j:
+                n = k.groups()
+                song_helper(n[0], n[1], q)
+        song_helper(res[0], res[1], q)
 
 
-if __name__ == '__main__':
-    # other_test()
-    test()
-    # regex_test()
-    # main()
+def counter(i):
+    yield i+1
+
+
+def chunker(a, j):
+    i = len(a)
+    high = math.ceil(i/j)
+    res = [a[x:x+high] for x in range(0, i, high)]
+    return res
+
+
+def mt(thread_id, playlist_name):
+    POOL_SIZE = 200
+    pool = multiprocessing.Pool(processes=POOL_SIZE)
+    manager = multiprocessing.Manager()
+    q = manager.Queue()
+    u = user.User()
+    p = playlist.Playlist(u.username, playlist_name, u.token)
+    a = fetch_comments(thread_id, u.client_id , u.client_secret)
+    mapfunc = partial(parse, q)
+    chunks = chunker(a, POOL_SIZE)
+    pool.map(mapfunc, [x for x in chunks])
+    q.put('STOP')
+    c = 0
+    d = dict()
+    for i in iter(q.get, 'STOP'):
+        if i in d:
+            pass
+        else:
+            d[i] = c
+            c = next(counter(c))
+
+    pool.close()
+    pool.terminate()
+    pool.join()
+    upload(list(d.keys()), p)
+
+
+def upload(tracks, p):
+    tracks = chunker(tracks, math.ceil(len(tracks)/100))
+    for track in tracks:
+       res = {} 
+       res['uris'] = track
+       res = json.dumps(res)
+       p.add_tracks(res)
+
+
+def main():
+    x = sys.argv[1]
+    if sys.argv[2]:
+        pl = sys.argv[2]
+    else:
+        pl = x
+    mt(x, pl)
+
+if __name__ == "__main__":
+    main()
