@@ -90,7 +90,7 @@ def chunker(a, j):
 
 
 def mt(thread_id, playlist_name):
-    POOL_SIZE = 200
+    POOL_SIZE = multiprocessing.cpu_count()
     pool = multiprocessing.Pool(processes=POOL_SIZE)
     manager = multiprocessing.Manager()
     q = manager.Queue()
